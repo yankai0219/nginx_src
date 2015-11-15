@@ -220,19 +220,28 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
 #endif
     }
 
+    //ngx_use_accept_mutex表示是否需要通过对accept加锁来解决惊群问题。当nginx worker进程数>1时且配置文件中打开accept_mutex时，这个标志置为1
+    //
     if (ngx_use_accept_mutex) {
+        //ngx_accept_disabled 在ngx_event_accept中进行赋值
+        //ngx_accept_disabled表示此时满负荷，没必要再处理新连接了，我们在nginx.conf曾经配置了每一个nginx worker进程能够处理的最大连接数，当达到最大数的7/8时，ngx_accept_disabled为正，说明本nginx worker进程非常繁忙，将不再去处理新连接，这也是个简单的负载均衡
         if (ngx_accept_disabled > 0) {
             ngx_accept_disabled--;
 
         } else {
+            // 文件锁
             if (ngx_trylock_accept_mutex(cycle) == NGX_ERROR) {
                 return;
             }
 
+            // ngx_accept_mutex_held获得锁的标识
             if (ngx_accept_mutex_held) {
+                // 获得锁，加入延迟处理的标识
+                // 拿到锁的话，置flag为NGX_POST_EVENTS，这意味着ngx_process_events函数中，任何事件都将延后处理，会把accept事件都放到ngx_posted_accept_events链表中，epollin|epollout事件都放到ngx_posted_events链表中
                 flags |= NGX_POST_EVENTS;
 
             } else {
+                //拿不到锁，也就不会处理监听的句柄，这个timer实际是传给epoll_wait的超时时间，修改为最大ngx_accept_mutex_delay意味着epoll_wait更短的超时返回，以免新连接长时间没有得到处理
                 if (timer == NGX_TIMER_INFINITE
                     || timer > ngx_accept_mutex_delay)
                 {
@@ -244,6 +253,7 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
 
     delta = ngx_current_msec;
 
+    // Linux 调用ngx_epoll_process_events函数开始处理
     (void) ngx_process_events(cycle, timer, flags);
 
     delta = ngx_current_msec - delta;
@@ -251,21 +261,26 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "timer delta: %M", delta);
 
+    //如果ngx_posted_accept_events链表有数据，就开始accept建立新连接
     if (ngx_posted_accept_events) {
+        //ngx_event_process_posted处理流程：遍历整个数组，先从事件队列中删除事件，然后执行该事件的handler 对于accept而言 其handler是ngx_event_accept
         ngx_event_process_posted(cycle, &ngx_posted_accept_events);
     }
 
+    // 释放accept锁，其他进程可以继续accept
     if (ngx_accept_mutex_held) {
         ngx_shmtx_unlock(&ngx_accept_mutex);
     }
 
     if (delta) {
+        //*每次该函数都不断的从红黑树中取出时间值最小的，查看他们是否已经超时，然后执行他们的函数，直到取出的节点的时间没有超时为止*/
         ngx_event_expire_timers();
     }
 
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "posted events %p", ngx_posted_events);
 
+    //然后再处理正常的数据读写请求。因为这些请求耗时久，所以在ngx_process_events里NGX_POST_EVENTS标志将事件都放入ngx_posted_events链表中，延迟到锁释放了再处理。
     if (ngx_posted_events) {
         if (ngx_threaded) {
             ngx_wakeup_worker_thread(cycle);
@@ -594,6 +609,7 @@ ngx_event_process_init(ngx_cycle_t *cycle)
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
     ecf = ngx_event_get_conf(cycle->conf_ctx, ngx_event_core_module);
 
+    // 读取配置 判断是否ngx_use_accept_mutext
     if (ccf->master && ccf->worker_processes > 1 && ecf->accept_mutex) {
         ngx_use_accept_mutex = 1;
         ngx_accept_mutex_held = 0;
@@ -610,10 +626,12 @@ ngx_event_process_init(ngx_cycle_t *cycle)
     }
 #endif
 
+    // 初始化用来管理所有定时器的红黑树
     if (ngx_event_timer_init(cycle->log) == NGX_ERROR) {
         return NGX_ERROR;
     }
 
+    // 初始化事件模型
     for (m = 0; ngx_modules[m]; m++) {
         if (ngx_modules[m]->type != NGX_EVENT_MODULE) {
             continue;
@@ -625,6 +643,7 @@ ngx_event_process_init(ngx_cycle_t *cycle)
 
         module = ngx_modules[m]->ctx;
 
+        //TODO 
         if (module->actions.init(cycle, ngx_timer_resolution) != NGX_OK) {
             /* fatal */
             exit(2);
@@ -680,6 +699,7 @@ ngx_event_process_init(ngx_cycle_t *cycle)
 
 #endif
 
+    // 构造起了一个空的connections数组 之后的ngx_get_connection就是从这个connection数组中获取一个connection
     cycle->connections =
         ngx_alloc(sizeof(ngx_connection_t) * cycle->connection_n, cycle->log);
     if (cycle->connections == NULL) {
@@ -742,6 +762,7 @@ ngx_event_process_init(ngx_cycle_t *cycle)
 
     /* for each listening socket */
 
+    //为每个监听套接字分配一个连接结构
     ls = cycle->listening.elts;
     for (i = 0; i < cycle->listening.nelts; i++) {
 
@@ -759,6 +780,7 @@ ngx_event_process_init(ngx_cycle_t *cycle)
         rev = c->read;
 
         rev->log = c->log;
+        //标识此读事件为新请求连接事件
         rev->accept = 1;
 
 #if (NGX_HAVE_DEFERRED_ACCEPT)
@@ -823,12 +845,15 @@ ngx_event_process_init(ngx_cycle_t *cycle)
 
 #else
 
+        //将读事件结构的处理函数设置为ngx_event_accept
         rev->handler = ngx_event_accept;
 
+        //如果使用accept锁的话，要在后面抢到锁才能将监听句柄挂载上事件处理模型上
         if (ngx_use_accept_mutex) {
             continue;
         }
 
+        //否则，将该监听句柄直接挂载上事件处理模型
         if (ngx_event_flags & NGX_USE_RTSIG_EVENT) {
             if (ngx_add_conn(c) == NGX_ERROR) {
                 return NGX_ERROR;

@@ -50,7 +50,7 @@ ngx_event_accept(ngx_event_t *ev)
     }
 
     lc = ev->data;
-    ls = lc->listening;
+    ls = lc->listening;//TODO yankai Listening
     ev->ready = 0;
 
     ngx_log_debug2(NGX_LOG_DEBUG_EVENT, ev->log, 0,
@@ -162,6 +162,7 @@ ngx_event_accept(ngx_event_t *ev)
             return;
         }
 
+        //分配一个套接口地址（sockaddr），并将accept得到的对端地址拷贝在其中，保存在sockaddr字段
         c->sockaddr = ngx_palloc(c->pool, socklen);
         if (c->sockaddr == NULL) {
             ngx_close_accepted_connection(c);
@@ -354,6 +355,7 @@ ngx_event_accept(ngx_event_t *ev)
         log->data = NULL;
         log->handler = NULL;
 
+        //ngx_http_init_connection 
         ls->handler(c);
 
         if (ngx_event_flags & NGX_USE_KQUEUE_EVENT) {

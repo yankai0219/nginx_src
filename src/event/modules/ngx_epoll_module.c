@@ -612,6 +612,7 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
 
     ngx_mutex_lock(ngx_posted_events_mutex);
 
+    // epoll_event.data存的是connection
     for (i = 0; i < events; i++) {
         c = event_list[i].data.ptr;
 
@@ -620,6 +621,7 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
 
         rev = c->read;
 
+        // stable event http://www.pagefault.info/?p=46
         if (c->fd == -1 || rev->instance != instance) {
 
             /*
@@ -632,6 +634,7 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
             continue;
         }
 
+        // epoll_event的events字段 事件的类型
         revents = event_list[i].events;
 
         ngx_log_debug3(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
@@ -673,6 +676,8 @@ ngx_epoll_process_events(ngx_cycle_t *cycle, ngx_msec_t timer, ngx_uint_t flags)
                 rev->ready = 1;
             }
 
+            // 1. 抢到accept互斥锁的进程在ngx_process_events_and_timers会将事件进行NGX_POST_EVENTS标记
+            // 2. 进行了NGX_POST_EVENTS标记的事件不会马上被处理，而是ngx_locked_post_event函数将该事件放入到队列中 根据是否是accept类型，事件会被放入ngx_posted_accept_events/ngx_posted_events
             if (flags & NGX_POST_EVENTS) {
                 queue = (ngx_event_t **) (rev->accept ?
                                &ngx_posted_accept_events : &ngx_posted_events);

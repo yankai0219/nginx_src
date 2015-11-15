@@ -37,6 +37,7 @@ ngx_event_process_posted(ngx_cycle_t *cycle,
 
         ngx_delete_posted_event(ev);
 
+        // TODO ev->handler在哪儿设置的呢？
         ev->handler(ev);
     }
 }
