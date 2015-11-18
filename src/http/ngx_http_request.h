@@ -397,10 +397,17 @@ struct ngx_http_request_s {
     ngx_str_t                         http_protocol;
 
     ngx_chain_t                      *out;
-    ngx_http_request_t               *main;
+    // main 表示主请求。也就是当前request链中最上面的那个request。通过这个域我们就能判断当前的request是不是subrequest
+    ngx_http_request_t               *main; 
+    // parent 表示当前request的父request
     ngx_http_request_t               *parent;
+    // postponed 用来缓存父请求的数据（也就是要发送数据的请求）
+    // 缓存这个动作是在postpone filter中来做的
     ngx_http_postponed_request_t     *postponed;
+    // post_subrequest 保存了子请求的post request。保存了需要被发送的request
+    // 其中的字段 ngx_http_post_subrequest_pt handler 保存了到时候需要执行的回调函数
     ngx_http_post_subrequest_t       *post_subrequest;
+    // posted_requests 保存了所有需要处理的request链表 也就是既包含子请求又包含父请求
     ngx_http_posted_request_t        *posted_requests;
 
     ngx_http_virtual_names_t         *virtual_names;

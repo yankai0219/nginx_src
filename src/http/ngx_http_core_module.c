@@ -832,11 +832,11 @@ ngx_http_handler(ngx_http_request_t *r)
             r->keepalive = (r->http_version > NGX_HTTP_VERSION_10);
             break;
 
-        case NGX_HTTP_CONNECTION_CLOSE:
+        case NGX_HTTP_CONNECTION_CLOSE: // #define NGX_HTTP_CONNECTION_CLOSE    1
             r->keepalive = 0;
             break;
 
-        case NGX_HTTP_CONNECTION_KEEP_ALIVE:
+        case NGX_HTTP_CONNECTION_KEEP_ALIVE: // #define NGX_HTTP_CONNECTION_KEEP_ALIVE  2
             r->keepalive = 1;
             break;
         }
@@ -856,6 +856,7 @@ ngx_http_handler(ngx_http_request_t *r)
     r->gzip_vary = 0;
 #endif
 
+    // TODO 之所以设置写函数 是因为该函数是最后产生数据？为啥最后产生数据就需要设置写函数呢？是不是因为ngx_http_core_run_phases中会将该请求再次放入epoll呢？
     r->write_event_handler = ngx_http_core_run_phases;
     ngx_http_core_run_phases(r);
 }
@@ -2364,6 +2365,13 @@ ngx_http_gzip_quantity(u_char *p, u_char *last)
 #endif
 
 
+// 主要功能： 新建一个request 设置其属性。其中大部分属性都是和父request相同。 还有一些subrequest独有的属性
+// @r: 要生成子请求的request
+// @uri: 子请求的uri
+// @args: 子请求的参数
+// @psr: 最终生成的子请求
+// @ps: 子请求的post_subrequest
+// @flags: 控制subrequest的内容是否放在内存中
 ngx_int_t
 ngx_http_subrequest(ngx_http_request_t *r,
     ngx_str_t *uri, ngx_str_t *args, ngx_http_request_t **psr,
@@ -2375,6 +2383,7 @@ ngx_http_subrequest(ngx_http_request_t *r,
     ngx_http_core_srv_conf_t      *cscf;
     ngx_http_postponed_request_t  *pr, *p;
 
+    //subrequest表示了当前还可以处理的最大个数的sub request，这个值的默认值是50.表示nginx中能够处理的最多的嵌套子请求的个数是50
     r->main->subrequests--;
 
     if (r->main->subrequests == 0) {
@@ -2384,6 +2393,7 @@ ngx_http_subrequest(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
+    // 新建一个subrequest
     sr = ngx_pcalloc(r->pool, sizeof(ngx_http_request_t));
     if (sr == NULL) {
         return NGX_ERROR;
@@ -2421,12 +2431,15 @@ ngx_http_subrequest(ngx_http_request_t *r,
 
     sr->request_body = r->request_body;
 
+    // 可以看到子请求只能是GET方法
     sr->method = NGX_HTTP_GET;
     sr->http_version = r->http_version;
 
     sr->request_line = r->request_line;
+    // 设置子请求的uri
     sr->uri = *uri;
 
+    // 设置参数
     if (args) {
         sr->args = *args;
     }
@@ -2443,10 +2456,16 @@ ngx_http_subrequest(ngx_http_request_t *r,
 
     ngx_http_set_exten(sr);
 
+    // 设置main
     sr->main = r->main;
+    // 设置父请求
     sr->parent = r;
+    // 可以看到post_subrequest被设置为我们传递进来的值
     sr->post_subrequest = ps;
+    // 读事件的handler赋值为一个空函数，也就是在subrequest不会处理读事件
     sr->read_event_handler = ngx_http_request_empty_handler;
+    // 写事件赋值为ngx_http_handler 这是整个nginx的handler处理的入口。 
+    // 因此subrequest最终会把所有的phase重走一遍
     sr->write_event_handler = ngx_http_handler;
 
     if (c->data == r && r->postponed == NULL) {
@@ -2466,6 +2485,7 @@ ngx_http_subrequest(ngx_http_request_t *r,
     pr->out = NULL;
     pr->next = NULL;
 
+    // 将新创建的pr存入父请求r的postponed中
     if (r->postponed) {
         for (p = r->postponed; p->next; p = p->next) { /* void */ }
         p->next = pr;
@@ -2474,6 +2494,7 @@ ngx_http_subrequest(ngx_http_request_t *r,
         r->postponed = pr;
     }
 
+    //子请求为内部请求，它可以访问internal类型的location
     sr->internal = 1;
 
     sr->discard_body = r->discard_body;
@@ -2486,6 +2507,7 @@ ngx_http_subrequest(ngx_http_request_t *r,
     sr->start_sec = tp->sec;
     sr->start_msec = tp->msec;
 
+    //增加主请求的引用数，这个字段主要是在ngx_http_finalize_request调用的一些结束请求和连接的函数中使用
     r->main->count++;
 
     *psr = sr;
